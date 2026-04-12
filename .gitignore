@@ -1,0 +1,10 @@
+# raw downloads — too large even for LFS
+data/raw/ohlcv.parquet
+
+# keep processed + scalers in LFS, ignore window tensors (regeneratable)
+data/windows/
+
+# python
+__pycache__/
+*.pyc
+.DS_Store
