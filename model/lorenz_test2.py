@@ -1,16 +1,26 @@
+import os
+import random
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from pathlib import Path
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from uWNcWN import UnconditionalTCN, ConditionalTCNSeparate
+from uWNcWN2 import UnconditionalTCN, ConditionalTCNSeparate
 
 
 # =========================================================
-# 1. Lorenz system data generation
+# 1. Reproducibility
+# =========================================================
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+# =========================================================
+# 2. Lorenz system generation
 # =========================================================
 def generate_lorenz(
     n_steps=1600,
@@ -23,11 +33,12 @@ def generate_lorenz(
     z0=1.05,
 ):
     """
-    Generate Lorenz system using Euler method.
+    Generate Lorenz system using Euler discretization.
 
-    Returns:
-        data: ndarray of shape (n_steps, 3)
-              columns are [X, Y, Z]
+    Returns
+    -------
+    data : np.ndarray, shape (n_steps, 3)
+        Columns are [X, Y, Z].
     """
     x = np.zeros(n_steps, dtype=np.float32)
     y = np.zeros(n_steps, dtype=np.float32)
@@ -44,17 +55,13 @@ def generate_lorenz(
         y[t + 1] = y[t] + dt * dy
         z[t + 1] = z[t] + dt * dz
 
-    data = np.column_stack([x, y, z]).astype(np.float32)
-    return data
+    return np.column_stack([x, y, z]).astype(np.float32)
 
 
 # =========================================================
-# 2. Standardization helpers
+# 3. Standardization
 # =========================================================
 def fit_standardizer(train_data):
-    """
-    train_data: (N, d)
-    """
     mean = train_data.mean(axis=0, keepdims=True)
     std = train_data.std(axis=0, keepdims=True)
     std[std < 1e-8] = 1.0
@@ -70,25 +77,28 @@ def inverse_transform_column(x_std, mean_col, std_col):
 
 
 # =========================================================
-# 3. Build datasets
+# 4. Rolling-window dataset builders
 # =========================================================
 def build_unconditional_dataset(series, target_col, start_t, end_t, window):
     """
-    Build unconditional dataset for one coordinate.
+    Build unconditional dataset.
 
-    Inputs use past window:
-        [t-window, ..., t-1]
-    Target:
-        value at t
+    For each target time t:
+        input  = target_series[t-window : t]
+        target = target_series[t]
 
-    series: (N, 3)
-    target_col: int in {0,1,2}
-    start_t, end_t: inclusive range for targets
-    window: lookback length
+    Parameters
+    ----------
+    series : np.ndarray, shape (N, 3)
+    target_col : int
+    start_t : int
+    end_t : int
+    window : int
 
-    Returns:
-        X: (num_samples, window, 1)
-        y: (num_samples, 1)
+    Returns
+    -------
+    X : np.ndarray, shape (num_samples, window, 1)
+    y : np.ndarray, shape (num_samples, 1)
     """
     X_list = []
     y_list = []
@@ -109,14 +119,19 @@ def build_unconditional_dataset(series, target_col, start_t, end_t, window):
 
 def build_conditional_dataset(series, target_col, start_t, end_t, window):
     """
-    Build conditional dataset:
-    - main input is target coordinate history
-    - conditions are the other two coordinates
+    Build conditional dataset.
 
-    Returns:
-        X_main: (num_samples, window, 1)
-        c_list: list of length 2, each (num_samples, window, 1)
-        y:      (num_samples, 1)
+    Main input:
+        target coordinate history
+    Conditions:
+        the other two coordinates
+
+    Returns
+    -------
+    X_main : np.ndarray, shape (num_samples, window, 1)
+    c_list : list[np.ndarray]
+        two arrays, each shape (num_samples, window, 1)
+    y : np.ndarray, shape (num_samples, 1)
     """
     X_main_list = []
     C1_list = []
@@ -150,24 +165,32 @@ def build_conditional_dataset(series, target_col, start_t, end_t, window):
 
 
 # =========================================================
-# 4. Train functions
+# 5. Train / predict / metric
 # =========================================================
-def train_unconditional(model, X_train, y_train, n_iter=2000, lr=1e-3, weight_decay=1e-3, device="cpu"):
+def train_unconditional(
+    model,
+    X_train,
+    y_train,
+    n_iter=5000,
+    lr=1e-3,
+    weight_decay=1e-4,
+    device="cpu",
+):
     model.to(device)
     model.train()
 
-    X_train = torch.tensor(X_train, dtype=torch.float32, device=device)
-    y_train = torch.tensor(y_train, dtype=torch.float32, device=device)
+    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
+    y_train_t = torch.tensor(y_train, dtype=torch.float32, device=device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.MSELoss()
 
     loss_hist = []
 
-    for it in range(n_iter):
+    for _ in range(n_iter):
         optimizer.zero_grad()
-        pred = model(X_train)
-        loss = loss_fn(pred, y_train)
+        pred = model(X_train_t)
+        loss = loss_fn(pred, y_train_t)
         loss.backward()
         optimizer.step()
 
@@ -176,23 +199,32 @@ def train_unconditional(model, X_train, y_train, n_iter=2000, lr=1e-3, weight_de
     return loss_hist
 
 
-def train_conditional(model, X_train, c_train_list, y_train, n_iter=2000, lr=1e-3, weight_decay=1e-3, device="cpu"):
+def train_conditional(
+    model,
+    X_train,
+    c_train_list,
+    y_train,
+    n_iter=5000,
+    lr=1e-3,
+    weight_decay=1e-4,
+    device="cpu",
+):
     model.to(device)
     model.train()
 
-    X_train = torch.tensor(X_train, dtype=torch.float32, device=device)
-    c_train_list = [torch.tensor(c, dtype=torch.float32, device=device) for c in c_train_list]
-    y_train = torch.tensor(y_train, dtype=torch.float32, device=device)
+    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
+    c_train_list_t = [torch.tensor(c, dtype=torch.float32, device=device) for c in c_train_list]
+    y_train_t = torch.tensor(y_train, dtype=torch.float32, device=device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.MSELoss()
 
     loss_hist = []
 
-    for it in range(n_iter):
+    for _ in range(n_iter):
         optimizer.zero_grad()
-        pred = model(X_train, c_train_list)
-        loss = loss_fn(pred, y_train)
+        pred = model(X_train_t, c_train_list_t)
+        loss = loss_fn(pred, y_train_t)
         loss.backward()
         optimizer.step()
 
@@ -201,23 +233,20 @@ def train_conditional(model, X_train, c_train_list, y_train, n_iter=2000, lr=1e-
     return loss_hist
 
 
-# =========================================================
-# 5. Eval functions
-# =========================================================
 @torch.no_grad()
 def predict_unconditional(model, X, device="cpu"):
     model.eval()
-    X = torch.tensor(X, dtype=torch.float32, device=device)
-    pred = model(X).cpu().numpy()
+    X_t = torch.tensor(X, dtype=torch.float32, device=device)
+    pred = model(X_t).cpu().numpy()
     return pred
 
 
 @torch.no_grad()
 def predict_conditional(model, X, c_list, device="cpu"):
     model.eval()
-    X = torch.tensor(X, dtype=torch.float32, device=device)
-    c_list = [torch.tensor(c, dtype=torch.float32, device=device) for c in c_list]
-    pred = model(X, c_list).cpu().numpy()
+    X_t = torch.tensor(X, dtype=torch.float32, device=device)
+    c_list_t = [torch.tensor(c, dtype=torch.float32, device=device) for c in c_list]
+    pred = model(X_t, c_list_t).cpu().numpy()
     return pred
 
 
@@ -226,32 +255,28 @@ def rmse(y_true, y_pred):
 
 
 # =========================================================
-# 6. Run one coordinate experiment
+# 6. Single-coordinate experiment
 # =========================================================
 def run_one_coordinate_experiment(
     series_std,
     coord_name,
     target_col,
+    mean,
+    std,
     window=16,
     train_end=999,
     test_end=1500,
-    channels=16,
+    channels=8,
     kernel_size=2,
+    cond_kernel_size=2,
     num_layers=4,
     dropout=0.0,
-    n_iter=2000,
+    n_iter=5000,
     lr=1e-3,
-    weight_decay=1e-3,
+    weight_decay=1e-4,
     device="cpu",
 ):
-    """
-    Training targets:
-        t = window, ..., train_end
-    Test targets:
-        t = train_end+1, ..., test_end
-    """
-
-    # ---------- unconditional dataset ----------
+    # ---------- datasets ----------
     X_train_u, y_train_u = build_unconditional_dataset(
         series_std, target_col=target_col, start_t=window, end_t=train_end, window=window
     )
@@ -259,7 +284,6 @@ def run_one_coordinate_experiment(
         series_std, target_col=target_col, start_t=train_end + 1, end_t=test_end, window=window
     )
 
-    # ---------- conditional dataset ----------
     X_train_c, c_train_list, y_train_c = build_conditional_dataset(
         series_std, target_col=target_col, start_t=window, end_t=train_end, window=window
     )
@@ -281,65 +305,78 @@ def run_one_coordinate_experiment(
         num_conditions=2,
         channels=channels,
         kernel_size=kernel_size,
+        cond_kernel_size=cond_kernel_size,
         num_layers=num_layers,
         dropout=dropout,
     )
 
     # ---------- training ----------
     loss_u = train_unconditional(
-        model_u, X_train_u, y_train_u,
-        n_iter=n_iter, lr=lr, weight_decay=weight_decay, device=device
+        model_u,
+        X_train_u,
+        y_train_u,
+        n_iter=n_iter,
+        lr=lr,
+        weight_decay=weight_decay,
+        device=device,
     )
 
     loss_c = train_conditional(
-        model_c, X_train_c, c_train_list, y_train_c,
-        n_iter=n_iter, lr=lr, weight_decay=weight_decay, device=device
+        model_c,
+        X_train_c,
+        c_train_list,
+        y_train_c,
+        n_iter=n_iter,
+        lr=lr,
+        weight_decay=weight_decay,
+        device=device,
     )
 
     # ---------- prediction ----------
     pred_u = predict_unconditional(model_u, X_test_u, device=device)
     pred_c = predict_conditional(model_c, X_test_c, c_test_list, device=device)
 
-    rmse_u = rmse(y_test_u, pred_u)
-    rmse_c = rmse(y_test_c, pred_c)
+    # standardized scale
+    rmse_u_std = rmse(y_test_u, pred_u)
+    rmse_c_std = rmse(y_test_c, pred_c)
 
-    result = {
+    # original scale
+    mean_col = mean[0, target_col]
+    std_col = std[0, target_col]
+
+    y_test_orig = inverse_transform_column(y_test_u, mean_col, std_col)
+    pred_u_orig = inverse_transform_column(pred_u, mean_col, std_col)
+    pred_c_orig = inverse_transform_column(pred_c, mean_col, std_col)
+
+    rmse_u_orig = rmse(y_test_orig, pred_u_orig)
+    rmse_c_orig = rmse(y_test_orig, pred_c_orig)
+
+    return {
         "coord_name": coord_name,
-        "y_test": y_test_u,
-        "pred_u": pred_u,
-        "pred_c": pred_c,
-        "rmse_u": rmse_u,
-        "rmse_c": rmse_c,
+        "y_test_std": y_test_u,
+        "pred_u_std": pred_u,
+        "pred_c_std": pred_c,
+        "rmse_u_std": rmse_u_std,
+        "rmse_c_std": rmse_c_std,
+        "y_test_orig": y_test_orig,
+        "pred_u_orig": pred_u_orig,
+        "pred_c_orig": pred_c_orig,
+        "rmse_u_orig": rmse_u_orig,
+        "rmse_c_orig": rmse_c_orig,
         "loss_u": loss_u,
         "loss_c": loss_c,
     }
-    return result
-
-
-def run_coordinate_experiment_worker(task):
-    target_col, coord_name, kwargs = task
-    result = run_one_coordinate_experiment(
-        coord_name=coord_name,
-        target_col=target_col,
-        **kwargs,
-    )
-    return target_col, result
 
 
 # =========================================================
-# 7. Plot
+# 7. Plot and save
 # =========================================================
-def plot_coordinate_result(
-    result,
-    horizon_plot=100,
-    save_dir=None,
-    save_subplots=False,
-    dpi=150,
-):
+def plot_and_save_coordinate_result(result, save_dir, horizon_plot=100):
     coord_name = result["coord_name"]
-    y_true = result["y_test"].reshape(-1)
-    pred_u = result["pred_u"].reshape(-1)
-    pred_c = result["pred_c"].reshape(-1)
+
+    y_true = result["y_test_orig"].reshape(-1)
+    pred_u = result["pred_u_orig"].reshape(-1)
+    pred_c = result["pred_c_orig"].reshape(-1)
     loss_u = result["loss_u"]
     loss_c = result["loss_c"]
 
@@ -351,21 +388,18 @@ def plot_coordinate_result(
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
 
-    # Top-left: true vs uWN
     axes[0, 0].plot(t, y_true[:n], label="True data")
     axes[0, 0].plot(t, pred_u[:n], label="uWN")
     axes[0, 0].set_title(f"{coord_name}: True vs uWN")
     axes[0, 0].set_xlabel("Time step")
     axes[0, 0].legend()
 
-    # Top-right: true vs cWN
     axes[0, 1].plot(t, y_true[:n], label="True data")
     axes[0, 1].plot(t, pred_c[:n], label="cWN")
     axes[0, 1].set_title(f"{coord_name}: True vs cWN")
     axes[0, 1].set_xlabel("Time step")
     axes[0, 1].legend()
 
-    # Bottom-left: training loss
     axes[1, 0].plot(loss_u, label="uWN training loss")
     axes[1, 0].plot(loss_c, label="cWN training loss")
     axes[1, 0].set_title("Training loss")
@@ -373,7 +407,6 @@ def plot_coordinate_result(
     axes[1, 0].set_ylabel("MSE")
     axes[1, 0].legend()
 
-    # Bottom-right: error histogram
     axes[1, 1].hist(err_u, bins=40, alpha=0.6, label="uWN error")
     axes[1, 1].hist(err_c, bins=40, alpha=0.6, label="cWN error")
     axes[1, 1].set_title("Forecast error histogram")
@@ -381,51 +414,41 @@ def plot_coordinate_result(
 
     plt.tight_layout()
 
-    if save_dir is not None:
-        save_path = Path(save_dir)
-        save_path.mkdir(parents=True, exist_ok=True)
+    file_path = os.path.join(save_dir, f"lorenz_{coord_name}.png")
+    plt.savefig(file_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-        full_fig_path = save_path / f"{coord_name}_summary.png"
-        fig.savefig(full_fig_path, dpi=dpi)
-        print(f"Saved figure: {full_fig_path}")
+    print(f"Saved figure: {file_path}")
 
-        if save_subplots:
-            subplot_names = [
-                "true_vs_uwn",
-                "true_vs_cwn",
-                "training_loss",
-                "error_hist",
-            ]
-            for ax, name in zip(axes.flatten(), subplot_names):
-                # Save each subplot by cropping the full figure to the axis bounding box.
-                extent = ax.get_window_extent() .transformed(fig.dpi_scale_trans.inverted())
-                subplot_path = save_path / f"{coord_name}_{name}.png"
-                fig.savefig(subplot_path, dpi=dpi, bbox_inches=extent.expanded(1.08, 1.15))
-                print(f"Saved subplot: {subplot_path}")
-
-    plt.show()
 
 # =========================================================
 # 8. Main
 # =========================================================
 def main():
+    set_seed(42)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
-    # Paper-like settings
+    # save folder
+    save_dir = os.path.join(os.getcwd(), "result", "lorenz_figure")
+    os.makedirs(save_dir, exist_ok=True)
+    print("Figure save directory:", save_dir)
+
+    # hyperparameters
     kernel_size = 2
+    cond_kernel_size = 2
     num_layers = 4
-    channels = 1
+    channels = 16
     lr = 1e-3
-    weight_decay = 1e-3
-    n_iter = 20000
-    window = 16           # receptive field >= 16 for k=2, L=4
+    weight_decay = 1e-4
+    n_iter = 5000
+    window = 32
     train_end = 999
     test_end = 1500
-    parallel_train = True
-    max_workers = min(3, os.cpu_count() or 1)
+    dropout = 0.0
 
-    # 1) Generate data
+    # data
     data = generate_lorenz(
         n_steps=test_end + 1,
         dt=0.01,
@@ -437,78 +460,61 @@ def main():
         z0=1.05,
     )
 
-    # 2) Standardize using training part only
+    # standardize using train part only
     mean, std = fit_standardizer(data[:train_end + 1])
     data_std = transform_standardizer(data, mean, std)
 
     coord_names = ["X", "Y", "Z"]
-    results_by_idx = {}
+    results = []
 
-    # 3) Run experiments for X, Y, Z
-    common_kwargs = {
-        "series_std": data_std,
-        "window": window,
-        "train_end": train_end,
-        "test_end": test_end,
-        "channels": channels,
-        "kernel_size": kernel_size,
-        "num_layers": num_layers,
-        "dropout": 0.0,
-        "n_iter": n_iter,
-        "lr": lr,
-        "weight_decay": weight_decay,
-        "device": device,
-    }
-    tasks = [(i, name, common_kwargs) for i, name in enumerate(coord_names)]
+    for target_col, coord_name in enumerate(coord_names):
+        print(f"\nRunning experiment for {coord_name}...")
 
-    if parallel_train and device == "cpu" and max_workers > 1:
-        intraop_threads = max(1, (os.cpu_count() or 1) // max_workers)
-        torch.set_num_threads(intraop_threads)
-        print(f"\nParallel training enabled: workers={max_workers}, torch_threads={intraop_threads}")
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(run_coordinate_experiment_worker, task): task for task in tasks}
-            for future in as_completed(future_map):
-                target_col, result = future.result()
-                results_by_idx[target_col] = result
-                print(
-                    f"{result['coord_name']}: RMSE uWN = {result['rmse_u']:.6f}, "
-                    f"RMSE cWN = {result['rmse_c']:.6f}"
-                )
-    else:
-        if parallel_train and device != "cpu":
-            print("\nParallel training is disabled on CUDA device; running sequentially.")
-        for target_col, coord_name in enumerate(coord_names):
-            print(f"\nRunning experiment for {coord_name}...")
-            result = run_one_coordinate_experiment(
-                coord_name=coord_name,
-                target_col=target_col,
-                **common_kwargs,
-            )
-            results_by_idx[target_col] = result
-            print(
-                f"{coord_name}: RMSE uWN = {result['rmse_u']:.6f}, "
-                f"RMSE cWN = {result['rmse_c']:.6f}"
-            )
-
-    results = [results_by_idx[i] for i in range(len(coord_names))]
-
-    # 4) Summary table
-    print("\n===== RMSE Summary =====")
-    print(f"{'Coordinate':<12}{'RMSE uWN':<15}{'RMSE cWN':<15}")
-    for r in results:
-        print(f"{r['coord_name']:<12}{r['rmse_u']:<15.6f}{r['rmse_c']:<15.6f}")
-
-    # 5) Plot and save all coordinate results
-    figure_dir = Path(__file__).resolve().parent / "results" / "figures"
-    for r in results:
-        plot_coordinate_result(
-            r,
-            horizon_plot=100,
-            save_dir=figure_dir,
-            save_subplots=True,
-            dpi=150,
+        result = run_one_coordinate_experiment(
+            series_std=data_std,
+            coord_name=coord_name,
+            target_col=target_col,
+            mean=mean,
+            std=std,
+            window=window,
+            train_end=train_end,
+            test_end=test_end,
+            channels=channels,
+            kernel_size=kernel_size,
+            cond_kernel_size=cond_kernel_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            n_iter=n_iter,
+            lr=lr,
+            weight_decay=weight_decay,
+            device=device,
         )
+        results.append(result)
+
+        print(
+            f"{coord_name}: "
+            f"RMSE uWN (std) = {result['rmse_u_std']:.6f}, "
+            f"RMSE cWN (std) = {result['rmse_c_std']:.6f}, "
+            f"RMSE uWN (orig) = {result['rmse_u_orig']:.6f}, "
+            f"RMSE cWN (orig) = {result['rmse_c_orig']:.6f}"
+        )
+
+        plot_and_save_coordinate_result(result, save_dir=save_dir, horizon_plot=100)
+
+    summary_df = pd.DataFrame({
+        "Coordinate": [r["coord_name"] for r in results],
+        "RMSE_uWN_std": [r["rmse_u_std"] for r in results],
+        "RMSE_cWN_std": [r["rmse_c_std"] for r in results],
+        "RMSE_uWN_orig": [r["rmse_u_orig"] for r in results],
+        "RMSE_cWN_orig": [r["rmse_c_orig"] for r in results],
+    })
+
+    summary_path = os.path.join(save_dir, "rmse_summary.csv")
+    summary_df.to_csv(summary_path, index=False)
+
+    print("\nSaved RMSE summary to:", summary_path)
+    print("\n===== RMSE Summary =====")
+    print(summary_df.to_string(index=False))
 
 
 if __name__ == "__main__":
