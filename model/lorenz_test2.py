@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
-from uWNcWN2 import UnconditionalTCN, ConditionalTCNSeparate
+from model.uWNcWN2 import UnconditionalTCN, ConditionalTCNSeparate
 
 
 # =========================================================
@@ -413,6 +413,7 @@ def plot_and_save_coordinate_result(result, save_dir, horizon_plot=100):
     axes[1, 1].legend()
 
     plt.tight_layout()
+    plt.show()
 
     file_path = os.path.join(save_dir, f"lorenz_{coord_name}.png")
     plt.savefig(file_path, dpi=300, bbox_inches="tight")
@@ -424,14 +425,14 @@ def plot_and_save_coordinate_result(result, save_dir, horizon_plot=100):
 # =========================================================
 # 8. Main
 # =========================================================
-def main():
+def lorenz_test():
     set_seed(42)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
     # save folder
-    save_dir = os.path.join(os.getcwd(), "result", "lorenz_figure")
+    save_dir = os.path.join(os.getcwd(), "results", "lorenz_test")
     os.makedirs(save_dir, exist_ok=True)
     print("Figure save directory:", save_dir)
 
@@ -517,5 +518,6 @@ def main():
     print(summary_df.to_string(index=False))
 
 
+
 if __name__ == "__main__":
-    main()
+    lorenz_test()

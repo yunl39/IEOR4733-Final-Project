@@ -784,8 +784,9 @@ def plot_four_panel(
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved → {save_path}")
         plt.close(fig)
-    else:
-        plt.show()
+
+    plt.show()
+
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -836,7 +837,7 @@ def print_metrics_table(port_u, port_c, port_lstm, spy_ret, save_dir: Path | Non
 # 14. ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description="TCN/LSTM equity backtest")
     p.add_argument("--tickers", type=int, default=None)
     p.add_argument("--train_years", type=float, default=2.0)
@@ -854,11 +855,11 @@ def parse_args():
     p.add_argument("--no_plot", action="store_true")
     p.add_argument("--results_dir", type=str, default="results_uWNcWN_LSTM2")
     p.add_argument("--seed", type=int, default=42)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def backtest(argv=None):
+    args = parse_args(argv)
     set_seed(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -965,4 +966,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    backtest()
