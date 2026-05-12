@@ -1,0 +1,7 @@
+streamlit>=1.32.0
+pandas
+numpy
+matplotlib
+scikit-learn
+torch
+pyarrow
