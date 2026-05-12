@@ -73,7 +73,7 @@ def color_sharpe(val):
     return                    "background-color: #FEE2E2; color: #DC2626"
 
 st.dataframe(
-    sharpe_df.style.applymap(color_sharpe).format("{:.3f}"),
+    sharpe_df.style.map(color_sharpe).format("{:.3f}"),
     use_container_width=True,
 )
 
