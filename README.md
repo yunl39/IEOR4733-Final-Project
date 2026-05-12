@@ -21,41 +21,46 @@ The framework is modular and designed for reproducible empirical research and po
 # Project Structure
 
 ```text
-.
-├── app.py                                  # Streamlit app entry point
-├── pages/
-│   ├── 01_data_exploration.py
-│   ├── 02_backtest_results.py
-│   ├── 03_regime_analysis.py
-│   └── 04_run_simulation.py
-│
-├── results/
-│   ├── uWNcWN_LSTM2/
-│   │   ├── predictions_uWN.csv
-│   │   ├── predictions_cWN.csv
-│   │   ├── predictions_LSTM.csv
-│   │   ├── cumulative_returns.csv
-│   │   ├── daily_returns.csv
-│   │   ├── metrics.csv
-│   │   ├── regime_Bull_Market_2010_2019.csv
-│   │   ├── regime_COVID_Crash_Feb_Apr_2020.csv
-│   │   ├── regime_Bear_Market_2022.csv
-│   │   ├── regime_cumulative.png
-│   │   └── regime_sharpe.png
+├── data/
+│   ├── raw/
+│   │   ├── ohlcv.parquet             # Raw stock-level OHLCV data
+│   │   ├── signals.parquet           # Raw market signal data
+│   │   └── sp500_tickers.csv         # S&P 500 ticker universe
 │   │
-│   └── transaction_cost/
-│       ├── cumulative_returns.csv
-│       ├── daily_returns.csv
-│       ├── metrics.csv
-│       ├── long_short_comparison.png
-│       └── long_only_comparison.png
+│   ├── processed/
+│   │   └── features.parquet          # Processed feature dataset
+│   │
+│   ├── data_pipeline.py              # Data loading, cleaning, processing, and saving
+│   └── features.py                   # Feature engineering for stock-level and market-level features
+│
+├── model/
+│   ├── uWNcWN2.py                    # Main model architecture for uWN and cWN
+│   ├── lorenz_test2.py               # Lorenz test and model validation
+│   └── backtest_uWNcWN_LSTM2.py      # Training, validation, prediction, portfolio construction, and backtesting
 │
 ├── robustness/
-│   └── regime_analysis.py
+│   └── regime_analysis.py            # Regime-level performance analysis
 │
 ├── transaction_cost/
-│   └── transactioncost.py
+│   ├── transactioncost.py            # Portfolio comparison with transaction cost modeling
+│   ├── metrics.csv                   # Transaction-cost-adjusted performance metrics
+│   ├── daily_returns.csv             # Daily strategy returns under transaction costs
+│   ├── cumulative_returns.csv        # Cumulative strategy returns under transaction costs
+│   ├── long_short_comparison.png     # Long-short portfolio comparison plot
+│   └── long_only_comparison.png      # Long-only portfolio comparison plot
 │
-└── Main_Pipeline.ipynb
+├── pages/
+│   ├── 01_data_explorer.py           # Streamlit page for data and feature exploration
+│   ├── 02_backtest_results.py        # Streamlit page for backtest result visualization
+│   ├── 03_regime_analysis.py         # Streamlit page for regime analysis
+│   └── 04_run_simulation.py          # Streamlit page for interactive portfolio simulation
+│
+├── results/
+│   ├── lorenz_test/                  # Outputs from the Lorenz test
+│   └── uWNcWN_LSTM2/                 # Backtesting and Regime analy sisoutputs, metrics, predictions, returns, and plots
+│
+├── app.py                            # Streamlit dashboard entry point
+├── Main_Pipeline.ipynb               # Main notebook pipeline that coordinates all Python modules
+└── README.md                         # Project documentation
 
 
