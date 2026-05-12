@@ -95,16 +95,19 @@ def form_portfolio(
     holding_days: int = 1,
 ) -> pd.DataFrame:
     """
-    Same long-short calculation as portfolio_comparison_transaction_cost.py.
+    Portfolio construction with transaction costs for BOTH long-short and long-only.
 
-    Matching details:
-    - ranked = group["pred"].rank(ascending=False, method="first")
-    - gross_ls_ret = 0.5 * long_ret + 0.5 * short_ret
-    - net ls_ret = gross_ls_ret - turnover * cost_rate
-    - long_ret is kept as the long leg return, as in the transaction-cost file.
+    Long-short:
+        ls_ret_gross = 0.5 * long_ret_gross + 0.5 * short_ret
+        ls_ret_net   = ls_ret_gross - ls_turnover * cost_rate
 
-    Extension:
-    - bot_frac may be 0 for long-only simulations.
+    Long-only:
+        long_ret_net = long_ret_gross - long_turnover * cost_rate
+
+    Notes:
+    - bot_frac can be 0 for long-only-only simulations.
+    - long_ret is kept as the NET long-only return for backward compatibility.
+    - ls_ret is kept as the NET long-short return for backward compatibility.
     """
     cost_rate = cost_bps / 10_000
     all_dates = sorted(pred_df.index.get_level_values("date").unique())
@@ -132,41 +135,64 @@ def form_portfolio(
             else:
                 curr_short = set()
 
-            long_chg = len(curr_long ^ prev_long) / max(len(curr_long), 1)
+            long_turnover = len(curr_long ^ prev_long) / max(len(curr_long), 1)
 
             if k_bot > 0:
-                short_chg = len(curr_short ^ prev_short) / max(len(curr_short), 1)
-                turnover = (long_chg + short_chg) / 2.0
+                short_turnover = len(curr_short ^ prev_short) / max(len(curr_short), 1)
+                ls_turnover = (long_turnover + short_turnover) / 2.0
             else:
-                turnover = long_chg
+                short_turnover = 0.0
+                ls_turnover = long_turnover
 
             prev_long, prev_short = curr_long, curr_short
         else:
-            turnover = 0.0
+            long_turnover = 0.0
+            short_turnover = 0.0
+            ls_turnover = 0.0
 
         long_mask = tickers_today.isin(prev_long)
         short_mask = tickers_today.isin(prev_short)
 
-        long_ret = group.loc[long_mask, "realized"].mean() if long_mask.any() else 0.0
+        long_ret_gross = group.loc[long_mask, "realized"].mean() if long_mask.any() else 0.0
         short_ret = (-group.loc[short_mask, "realized"]).mean() if short_mask.any() else 0.0
 
-        gross_ls_ret = 0.5 * long_ret + 0.5 * short_ret
-        net_ls_ret = gross_ls_ret - turnover * cost_rate
+        ls_ret_gross = 0.5 * long_ret_gross + 0.5 * short_ret
+
+        ls_transaction_cost = ls_turnover * cost_rate
+        long_transaction_cost = long_turnover * cost_rate
+
+        ls_ret_net = ls_ret_gross - ls_transaction_cost
+        long_ret_net = long_ret_gross - long_transaction_cost
 
         rows.append({
             "date": date,
-            "long_ret": long_ret,
+
+            # Long-short returns
+            "ls_ret": ls_ret_net,
+            "ls_ret_net": ls_ret_net,
+            "ls_ret_gross": ls_ret_gross,
             "short_ret": short_ret,
-            "ls_ret": net_ls_ret,
-            "ls_ret_gross": gross_ls_ret,
-            "transaction_cost": turnover * cost_rate,
-            "turnover": turnover,
+
+            # Long-only returns
+            "long_ret": long_ret_net,
+            "long_ret_net": long_ret_net,
+            "long_ret_gross": long_ret_gross,
+
+            # Transaction costs and turnover
+            "transaction_cost": ls_transaction_cost,
+            "ls_transaction_cost": ls_transaction_cost,
+            "long_transaction_cost": long_transaction_cost,
+            "turnover": ls_turnover,
+            "ls_turnover": ls_turnover,
+            "long_turnover": long_turnover,
+            "short_turnover": short_turnover,
+
+            # Holdings
             "n_long": int(long_mask.sum()),
             "n_short": int(short_mask.sum()),
         })
 
     return pd.DataFrame(rows).set_index("date").sort_index()
-
 
 def compute_metrics(daily_returns: pd.Series, name: str = "strategy") -> dict:
     r = daily_returns.dropna()
@@ -397,10 +423,10 @@ if show_long_only:
     st.subheader("Long-Only Strategy — Portfolio Performance")
     fig_long = plot_four_panel(
         portfolios={
-            f"{name} Long": port.loc[common, "long_ret"]
+            f"{name} Long net": port.loc[common, "long_ret_net"]
             for name, port in ports.items()
         },
-        title=f"Long-Only Portfolio Comparison, {cost_bps} bps Cost",
+        title=f"Long-Only Net Portfolio Comparison, {cost_bps} bps Cost",
     )
     st.pyplot(fig_long)
     plt.close(fig_long)
@@ -415,7 +441,8 @@ for name, port in ports.items():
         rows.append(compute_metrics(port.loc[common, "ls_ret_gross"], f"{name} L/S gross"))
 
     if show_long_only:
-        rows.append(compute_metrics(port.loc[common, "long_ret"], f"{name} Long"))
+        rows.append(compute_metrics(port.loc[common, "long_ret_net"], f"{name} Long net"))
+        rows.append(compute_metrics(port.loc[common, "long_ret_gross"], f"{name} Long gross"))
 
 metrics_df = pd.DataFrame(rows)
 
@@ -432,8 +459,8 @@ st.dataframe(
     use_container_width=True,
 )
 
-if show_long_short:
-    st.subheader("Transaction Cost Sensitivity — Long-Short Sharpe Ratio")
+if show_long_short or show_long_only:
+    st.subheader("Transaction Cost Sensitivity — Sharpe Ratio")
     st.caption("Holding period and group sizes are fixed; only transaction cost changes.")
 
     cost_rows = []
@@ -449,9 +476,16 @@ if show_long_short:
                 cost_bps=c,
                 holding_days=holding_days,
             )
-            r = p["ls_ret"].reindex(common).dropna()
-            sh = r.mean() / (r.std() + 1e-9) * np.sqrt(ANNUAL_DAYS)
-            row[f"{name} L/S"] = round(sh, 3)
+
+            if show_long_short:
+                r_ls = p["ls_ret_net"].reindex(common).dropna()
+                sh_ls = r_ls.mean() / (r_ls.std() + 1e-9) * np.sqrt(ANNUAL_DAYS)
+                row[f"{name} L/S net"] = round(sh_ls, 3)
+
+            if show_long_only:
+                r_long = p["long_ret_net"].reindex(common).dropna()
+                sh_long = r_long.mean() / (r_long.std() + 1e-9) * np.sqrt(ANNUAL_DAYS)
+                row[f"{name} Long net"] = round(sh_long, 3)
 
         cost_rows.append(row)
 
@@ -478,7 +512,7 @@ if show_long_short:
     cols = st.columns(len(ports))
 
     for col, (name, port) in zip(cols, ports.items()):
-        rebal_turn = port[port["turnover"] > 0]["turnover"]
+        rebal_turn = port[port["ls_turnover"] > 0]["ls_turnover"]
         avg_t = rebal_turn.mean() * 100 if len(rebal_turn) > 0 else 0
         n_rebal = len(rebal_turn)
 
@@ -487,4 +521,20 @@ if show_long_short:
             f"{avg_t:.1f}%",
             delta=f"{n_rebal} rebalances",
             help="Average turnover used to deduct transaction cost in the long-short strategy.",
+        )
+
+if show_long_only:
+    st.subheader("Average Turnover on Rebalance Days — Long-Only")
+    cols = st.columns(len(ports))
+
+    for col, (name, port) in zip(cols, ports.items()):
+        rebal_turn = port[port["long_turnover"] > 0]["long_turnover"]
+        avg_t = rebal_turn.mean() * 100 if len(rebal_turn) > 0 else 0
+        n_rebal = len(rebal_turn)
+
+        col.metric(
+            f"{name} Long",
+            f"{avg_t:.1f}%",
+            delta=f"{n_rebal} rebalances",
+            help="Average turnover used to deduct transaction cost in the long-only strategy.",
         )
