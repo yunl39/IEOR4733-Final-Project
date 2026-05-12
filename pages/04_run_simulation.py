@@ -503,7 +503,7 @@ if show_long_short or show_long_only:
             return ""
 
     st.dataframe(
-        cost_df.style.applymap(color_sharpe),
+        cost_df.style.map(color_sharpe),
         use_container_width=True,
     )
 
