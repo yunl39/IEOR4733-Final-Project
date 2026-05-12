@@ -16,7 +16,7 @@ features.py                   # Feature definitions (imported by pipeline)
 
 model/
   uWNcWN.py                   # Unconditional and conditional model and usage example
-  lorenz_test.py              # Lorenz example in the paper with model usage example
+  lorenz_test2.py              # Lorenz example in the paper with model usage example
 ```
 
 
